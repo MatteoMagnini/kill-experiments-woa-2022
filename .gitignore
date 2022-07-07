@@ -1,7 +1,6 @@
 .idea/
 .vscode/
 .DS_Store
-*.csv
 *.pdf
 
 # Byte-compiled / optimized / DLL files
