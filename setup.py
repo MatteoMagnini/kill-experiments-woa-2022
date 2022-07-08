@@ -1,7 +1,9 @@
 import glob
 import os
 import pandas as pd
-from numpy import mean, ndarray, array
+from matplotlib import pyplot as plt
+from matplotlib.pyplot import boxplot
+from numpy import mean, array, arange
 from pandas import read_csv
 from psyki.logic.datalog.grammar.adapters import antlr4
 from psyki.ski.injectors import LambdaLayer
@@ -10,12 +12,12 @@ import pathlib
 import subprocess
 import distutils.cmd
 from tensorflow.python.framework.random_seed import set_seed
-from resources.data import get_dataset
-from resources.results import PATH, sum_confusion_matrix, single_class_accuracies, macro_f1, accuracy, weighted_f1
-from resources.rules.poker import CLASS_MAPPING as POKER_CLASS_MAPPING, FEATURE_MAPPING as POKER_FEATURE_MAPPING
-from resources.execution.utils import run_experiments, create_standard_fully_connected_nn
-from resources.rules import get_rules
 
+import resources.execution
+from resources.data import get_dataset
+from resources.results import PATH, single_class_accuracies, macro_f1, accuracy, weighted_f1
+from resources.execution import create_standard_fully_connected_nn, run_experiments
+from resources.rules import get_rules, FEATURE_MAPPING as POKER_FEATURE_MAPPING, CLASS_MAPPING as POKER_CLASS_MAPPING
 
 # current directory
 here = pathlib.Path(__file__).parent.resolve()
@@ -28,7 +30,7 @@ long_description = (here / 'README.md').read_text(encoding='utf-8')
 
 def format_git_describe_version(version):
     if '-' in version:
-        splitted = version.run_experiments('-')
+        splitted = resources.execution.run_experiments('-')
         tag = splitted[0]
         index = f"dev{splitted[1]}"
         return f"{tag}.{index}"
@@ -75,37 +77,32 @@ class GetVersionCommand(distutils.cmd.Command):
 class RunKILLExperiments(distutils.cmd.Command):
     """A custom command to execute experiments using KINS algorithm."""
 
-    gamma = None
+    seed = 42
+    epochs = 100
     yes = 'y'
     yes_matches = ('y', 'Y', 'yes', 'Yes', 'YES')
-    sj = 'splice-junction'
-    description = 'generate a csv file reporting the performance of KINS on the spite-junction dataset'
+    description = 'generate a csv file reporting the performance of KILL on the poker hands dataset'
     user_options = [('early=', 'e', 'early stop conditions: [y]/n'),
-                    ('seed=', 's', 'starting seed, default is 0'),
-                    ('knowledge=', 'k', 'knowledge during training: [y]/n'),
-                    ('file=', 'f', 'result file name, default "result" (.csv)')]
+                    ('knowledge=', 'k', 'knowledge during training: [y]/n')]
 
     def initialize_options(self):
-        self.seed = 42
         self.file = 'result'
         self.knowledge = self.yes
         self.early = self.yes
 
     def finalize_options(self):
-        self.seed = int(self.seed)
         self.knowledge = self.knowledge in self.yes_matches
         self.early = self.early in self.yes_matches
 
     def run(self):
         set_seed(self.seed)
-        # Loading dataset and apply one-hot encoding for each feature
-        # This means that for feature i_th we have 4 new features, one for each base.
         data = pd.DataFrame(get_dataset('train'), dtype='int32')
         test = pd.DataFrame(get_dataset('test'), dtype='int32')
         formulae = [antlr4.get_formula_from_string(rule) for rule in get_rules()]
         model = create_standard_fully_connected_nn(10, 10, 3, 128, 'relu')
-        injector = LambdaLayer(model, POKER_CLASS_MAPPING, POKER_FEATURE_MAPPING, self.gamma)
-        result = run_experiments(data, injector, formulae, test=test, seed=self.seed, training_ratio=900, epochs=100,
+
+        injector = LambdaLayer(model, POKER_CLASS_MAPPING, POKER_FEATURE_MAPPING)
+        result = run_experiments(data, injector, formulae, test=test, seed=self.seed, epochs=self.epochs,
                                  use_knowledge=self.knowledge, stop=self.early)
         result.to_csv(self.file + '.csv', sep=';')
 
@@ -129,7 +126,10 @@ class ComputeStatistics(distutils.cmd.Command):
                             '\nAccepted values are: ' + ','.join(self.allowed_folders))
 
     def run(self):
-        folder = str(PATH / self.folder)  # + '-old'
+        folder = str(PATH / self.folder)
+
+        print('\n\nComputing statistics for ' + self.folder + ' experiments.\n')
+
         num_files = len([name for name in os.listdir(folder) if os.path.isfile(os.path.join(folder, name))])
         if num_files == 0:
             raise Exception('No file found in ' + folder)
@@ -144,19 +144,55 @@ class ComputeStatistics(distutils.cmd.Command):
             mf1.append(macro_f1(cm))
             wf1.append(weighted_f1(cm))
 
-        print("Single class accuracies:")
-        print(mean(array(single_class_acc), axis=0))
         print('Accuracy: ' + str(mean(acc)))
         print("Macro F1: " + str(mean(mf1)))
         print("Weighted F1: " + str(mean(wf1)))
+        print("Single class accuracies:")
+        print(mean(array(single_class_acc), axis=0))
+
         print("\n\n" + 50 * '-' + '\n\n')
 
-        sum_cm = sum_confusion_matrix(confusion_matrices)
-        print("Single class accuracies:")
-        print(single_class_accuracies(sum_cm))
-        print('Accuracy: ' + str(accuracy(sum_cm)))
-        print("Macro F1: " + str(macro_f1(sum_cm)))
-        print("Weighted F1: " + str(weighted_f1(sum_cm)))
+        print("Generating class accuracy distributions plot")
+        x_labels = ['Nothing', 'Pair', 'Two Pairs', 'Three', 'Straight',
+                    'Flush', 'Full', 'Four', 'Straight F.', 'Royal F.']
+        plt.figure(figsize=(20, 10))
+        main_color = 'blue'
+        border_color = 'royalblue'
+        box1 = boxplot(array(single_class_acc), positions=list(range(1, 11, 1)),
+                notch=False, patch_artist=True,
+                boxprops=dict(facecolor=border_color, color=main_color),
+                capprops=dict(color=main_color),
+                whiskerprops=dict(color=main_color),
+                flierprops=dict(color=main_color, markeredgecolor=main_color),
+                medianprops=dict(color=main_color),)
+
+        other_folder = [x for x in self.allowed_folders if x != self.folder][0]
+        other_folder_path = str(PATH / other_folder)
+        confusion_matrices = []
+        for file in glob.glob(other_folder_path + '/' + self.base_confusion_matrix_file_name + '*.csv'):
+            confusion_matrices.append(read_csv(file).iloc[:, 1:].to_numpy())
+
+        single_class_acc = []
+        for cm in confusion_matrices:
+            single_class_acc.append(single_class_accuracies(cm))
+        main_color = 'red'
+        border_color = 'pink'
+        box2 = plt.boxplot(array(single_class_acc), positions=list(arange(1.5, 11.5, 1)),
+                           notch=False, patch_artist=True)
+        for item in ['boxes', 'whiskers', 'fliers', 'medians', 'caps']:
+            plt.setp(box2[item], color=main_color)
+        plt.setp(box2["boxes"], facecolor=border_color)
+        plt.setp(box2["fliers"], markeredgecolor=main_color)
+        plt.xticks(list(range(1, 11)), list(range(1, 11)))
+        plt.xlabel('Classes', fontsize=20)
+        plt.ylabel('Accuracy', fontsize=20)
+        plt.title('Class accuracy distributions', fontsize=32)
+        # plt.subplot().set_xticklabels(list(POKER_CLASS_MAPPING.keys()), fontsize=16)
+        plt.subplot().set_xticklabels(x_labels, fontsize=16)
+        plt.subplot().legend([box1['boxes'][0], box2['boxes'][0]], [self.folder, other_folder], fontsize=20)
+        # plt.show()
+        plt.savefig(PATH / 'class-accuracy-distributions.pdf', format='pdf', bbox_inches='tight')
+        print("Plot available at " + str(PATH / 'class-accuracy-distributions.pdf'))
 
 
 setup(
