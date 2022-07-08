@@ -35,7 +35,7 @@ Options are:
 The command will start the training of 30 neural networks and their test.
 Results will be stored in `resources/results/` folder inside `knowledge` or `classic` subfolders.
 
-### Statistics
+#### Statistics
 Run `python -m setup.py get_statistics` to print the statistics for a given experiment population.
 Option are:
 - `-f [knowledge]/classic` to specify the experiment class.
